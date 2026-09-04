@@ -1,0 +1,168 @@
+{
+  "name": "Booking Confirmation & Reminder Sequence",
+  "nodes": [
+    {
+      "id": "booking_form",
+      "name": "New Booking Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [0, 0],
+      "parameters": {
+        "formTitle": "Book an appointment",
+        "formDescription": "Confirm your details and we'll send you a confirmation and reminder.",
+        "path": "new-booking",
+        "formFields": {
+          "values": [
+            { "fieldLabel": "Customer Name", "fieldType": "text", "requiredField": true },
+            { "fieldLabel": "Email", "fieldType": "email", "requiredField": true },
+            { "fieldLabel": "Phone (optional)", "fieldType": "text", "requiredField": false },
+            { "fieldLabel": "Service", "fieldType": "text", "requiredField": true },
+            { "fieldLabel": "Appointment Date & Time (YYYY-MM-DD HH:mm)", "fieldType": "text", "requiredField": true }
+          ]
+        }
+      }
+    },
+    {
+      "id": "parse_booking",
+      "name": "Parse Booking",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst apptTime = new Date(String(d['Appointment Date & Time (YYYY-MM-DD HH:mm)']).replace(' ', 'T'));\nconst bookingId = `${(d['Email']||'').toLowerCase()}-${apptTime.getTime()}`;\nconst reminderTime = new Date(apptTime.getTime() - 24*60*60*1000);\nconst checkTime = new Date(apptTime.getTime() + 60*60*1000);\nreturn [{ json: { ...d, bookingId, apptTimeIso: apptTime.toISOString(), reminderTimeIso: reminderTime.toISOString(), checkTimeIso: checkTime.toISOString(), status: 'Confirmed' } }];"
+      }
+    },
+    {
+      "id": "send_confirmation",
+      "name": "Send Confirmation Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [440, 0],
+      "parameters": {
+        "fromEmail": "hello@struct.solutions",
+        "toEmail": "={{$json['Email']}}",
+        "subject": "={{ 'Booking confirmed: ' + $json['Service'] }}",
+        "emailFormat": "text",
+        "text": "={{ 'Hi ' + $json['Customer Name'] + ',\\n\\nYour booking for ' + $json['Service'] + ' on ' + $json['Appointment Date & Time (YYYY-MM-DD HH:mm)'] + ' is confirmed. We will send you a reminder 24 hours beforehand.\\n\\nSee you then!' }}",
+        "options": {}
+      },
+      "credentials": { "smtp": { "name": "SMTP account" } }
+    },
+    {
+      "id": "log_confirmed",
+      "name": "Log Booking (Confirmed)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [660, 0],
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "id", "value": "REPLACE_WITH_SPREADSHEET_ID" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Bookings" },
+        "columns": { "mappingMode": "autoMapInputData", "matchingColumns": [], "schema": [], "value": {} },
+        "options": {}
+      },
+      "credentials": { "googleSheetsOAuth2Api": { "name": "Google Sheets account" } }
+    },
+    {
+      "id": "wait_reminder",
+      "name": "Wait Until Reminder Time",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [880, 0],
+      "parameters": { "resume": "specificTime", "dateTime": "={{ $json.reminderTimeIso }}" }
+    },
+    {
+      "id": "send_reminder",
+      "name": "Send Reminder Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1100, 0],
+      "parameters": {
+        "fromEmail": "hello@struct.solutions",
+        "toEmail": "={{$json['Email']}}",
+        "subject": "={{ 'Reminder: ' + $json['Service'] + ' tomorrow' }}",
+        "emailFormat": "text",
+        "text": "={{ 'Hi ' + $json['Customer Name'] + ',\\n\\nJust a reminder that your appointment for ' + $json['Service'] + ' is coming up on ' + $json['Appointment Date & Time (YYYY-MM-DD HH:mm)'] + '.\\n\\nSee you soon!' }}",
+        "options": {}
+      },
+      "credentials": { "smtp": { "name": "SMTP account" } }
+    },
+    {
+      "id": "wait_checkin",
+      "name": "Wait Until After Appointment",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1320, 0],
+      "parameters": { "resume": "specificTime", "dateTime": "={{ $json.checkTimeIso }}" }
+    },
+    {
+      "id": "mark_noshow_default",
+      "name": "Mark No-Show (Default)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1540, 0],
+      "parameters": {
+        "includeOtherFields": true,
+        "assignments": {
+          "assignments": [
+            { "id": "1", "name": "status", "type": "string", "value": "No-Show (auto - overwritten if Mark Attended was called)" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "log_noshow",
+      "name": "Log Booking (No-Show Check)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1760, 0],
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "id", "value": "REPLACE_WITH_SPREADSHEET_ID" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Bookings" },
+        "columns": { "mappingMode": "autoMapInputData", "matchingColumns": [], "schema": [], "value": {} },
+        "options": {}
+      },
+      "credentials": { "googleSheetsOAuth2Api": { "name": "Google Sheets account" } }
+    },
+    {
+      "id": "mark_attended_webhook",
+      "name": "Mark Attended (Webhook)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [220, 220],
+      "parameters": { "path": "mark-attended", "httpMethod": "POST", "responseMode": "onReceived", "options": {} }
+    },
+    {
+      "id": "log_attended",
+      "name": "Log Booking (Attended)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [440, 220],
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "id", "value": "REPLACE_WITH_SPREADSHEET_ID" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Bookings" },
+        "columns": { "mappingMode": "autoMapInputData", "matchingColumns": [], "schema": [], "value": {} },
+        "options": {}
+      },
+      "credentials": { "googleSheetsOAuth2Api": { "name": "Google Sheets account" } }
+    }
+  ],
+  "connections": {
+    "New Booking Form": { "main": [[{ "index": 0, "node": "Parse Booking", "type": "main" }]] },
+    "Parse Booking": { "main": [[{ "index": 0, "node": "Send Confirmation Email", "type": "main" }]] },
+    "Send Confirmation Email": { "main": [[{ "index": 0, "node": "Log Booking (Confirmed)", "type": "main" }]] },
+    "Log Booking (Confirmed)": { "main": [[{ "index": 0, "node": "Wait Until Reminder Time", "type": "main" }]] },
+    "Wait Until Reminder Time": { "main": [[{ "index": 0, "node": "Send Reminder Email", "type": "main" }]] },
+    "Send Reminder Email": { "main": [[{ "index": 0, "node": "Wait Until After Appointment", "type": "main" }]] },
+    "Wait Until After Appointment": { "main": [[{ "index": 0, "node": "Mark No-Show (Default)", "type": "main" }]] },
+    "Mark No-Show (Default)": { "main": [[{ "index": 0, "node": "Log Booking (No-Show Check)", "type": "main" }]] },
+    "Mark Attended (Webhook)": { "main": [[{ "index": 0, "node": "Log Booking (Attended)", "type": "main" }]] }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
