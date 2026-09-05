@@ -15,7 +15,7 @@
           "values": [
             { "fieldLabel": "Customer Name", "fieldType": "text", "requiredField": true },
             { "fieldLabel": "Email", "fieldType": "email", "requiredField": true },
-            { "fieldLabel": "Phone (optional)", "fieldType": "text", "requiredField": false },
+            { "fieldLabel": "Phone", "fieldType": "text", "requiredField": true },
             { "fieldLabel": "Service", "fieldType": "text", "requiredField": true },
             { "fieldLabel": "Appointment Date & Time (YYYY-MM-DD HH:mm)", "fieldType": "text", "requiredField": true }
           ]
@@ -29,7 +29,25 @@
       "typeVersion": 2,
       "position": [220, 0],
       "parameters": {
-        "jsCode": "const d = $input.first().json;\nconst apptTime = new Date(String(d['Appointment Date & Time (YYYY-MM-DD HH:mm)']).replace(' ', 'T'));\nconst bookingId = `${(d['Email']||'').toLowerCase()}-${apptTime.getTime()}`;\nconst reminderTime = new Date(apptTime.getTime() - 24*60*60*1000);\nconst checkTime = new Date(apptTime.getTime() + 60*60*1000);\nreturn [{ json: { ...d, bookingId, apptTimeIso: apptTime.toISOString(), reminderTimeIso: reminderTime.toISOString(), checkTimeIso: checkTime.toISOString(), status: 'Confirmed' } }];"
+        "jsCode": "const d = $input.first().json;\nconst apptTime = new Date(String(d['Appointment Date & Time (YYYY-MM-DD HH:mm)']).replace(' ', 'T'));\nconst bookingId = `${(d['Email']||'').toLowerCase()}-${apptTime.getTime()}`;\nconst reminderTime = new Date(apptTime.getTime() - 24*60*60*1000);\nconst reminder2Time = new Date(apptTime.getTime() - 2*60*60*1000);\nconst checkTime = new Date(apptTime.getTime() + 60*60*1000);\nlet phoneE164 = String(d['Phone'] || '').replace(/[\\s\\-()]/g, '');\nif (phoneE164 && !phoneE164.startsWith('+')) {\n  phoneE164 = phoneE164.replace(/^0/, '+44');\n}\nreturn [{ json: { ...d, bookingId, apptTimeIso: apptTime.toISOString(), reminderTimeIso: reminderTime.toISOString(), reminder2TimeIso: reminder2Time.toISOString(), checkTimeIso: checkTime.toISOString(), phoneE164, status: 'Confirmed' } }];"
+      }
+    },
+    {
+      "id": "sms_config",
+      "name": "SMS Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [440, 0],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "sc1", "name": "twilio_account_sid", "value": "REPLACE_WITH_TWILIO_ACCOUNT_SID", "type": "string" },
+            { "id": "sc2", "name": "twilio_from_number", "value": "REPLACE_WITH_TWILIO_FROM_NUMBER", "type": "string" }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
       }
     },
     {
@@ -37,7 +55,7 @@
       "name": "Send Confirmation Email",
       "type": "n8n-nodes-base.emailSend",
       "typeVersion": 2.1,
-      "position": [440, 0],
+      "position": [660, 0],
       "parameters": {
         "fromEmail": "hello@struct.solutions",
         "toEmail": "={{$json['Email']}}",
@@ -53,7 +71,7 @@
       "name": "Log Booking (Confirmed)",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [660, 0],
+      "position": [880, 0],
       "parameters": {
         "operation": "append",
         "documentId": { "__rl": true, "mode": "id", "value": "REPLACE_WITH_SPREADSHEET_ID" },
@@ -68,7 +86,7 @@
       "name": "Wait Until Reminder Time",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [880, 0],
+      "position": [1100, 0],
       "parameters": { "resume": "specificTime", "dateTime": "={{ $json.reminderTimeIso }}" }
     },
     {
@@ -76,7 +94,7 @@
       "name": "Send Reminder Email",
       "type": "n8n-nodes-base.emailSend",
       "typeVersion": 2.1,
-      "position": [1100, 0],
+      "position": [1320, -100],
       "parameters": {
         "fromEmail": "hello@struct.solutions",
         "toEmail": "={{$json['Email']}}",
@@ -88,11 +106,69 @@
       "credentials": { "smtp": { "name": "SMTP account" } }
     },
     {
+      "id": "send_reminder_sms_24h",
+      "name": "Send Reminder SMS (24h)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1320, 100],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.twilio.com/2010-04-01/Accounts/{{ $json.twilio_account_sid }}/Messages.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "To", "value": "={{ $json.phoneE164 }}" },
+            { "name": "From", "value": "={{ $json.twilio_from_number }}" },
+            { "name": "Body", "value": "={{ 'Hi ' + $json['Customer Name'] + ', reminder: your ' + $json['Service'] + ' appointment is tomorrow at ' + $json['Appointment Date & Time (YYYY-MM-DD HH:mm)'] + '. Reply if you need to reschedule.' }}" }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": { "httpBasicAuth": { "name": "Twilio Basic Auth account" } }
+    },
+    {
+      "id": "wait_2h_before",
+      "name": "Wait Until 2h Before",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1540, -100],
+      "parameters": { "resume": "specificTime", "dateTime": "={{ $json.reminder2TimeIso }}" }
+    },
+    {
+      "id": "send_reminder_sms_2h",
+      "name": "Send Second Reminder SMS (2h)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1760, 100],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.twilio.com/2010-04-01/Accounts/{{ $json.twilio_account_sid }}/Messages.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "To", "value": "={{ $json.phoneE164 }}" },
+            { "name": "From", "value": "={{ $json.twilio_from_number }}" },
+            { "name": "Body", "value": "={{ 'Hi ' + $json['Customer Name'] + ', your ' + $json['Service'] + ' appointment is in 2 hours (' + $json['Appointment Date & Time (YYYY-MM-DD HH:mm)'] + '). See you soon!' }}" }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": { "httpBasicAuth": { "name": "Twilio Basic Auth account" } }
+    },
+    {
       "id": "wait_checkin",
       "name": "Wait Until After Appointment",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [1320, 0],
+      "position": [1760, -100],
       "parameters": { "resume": "specificTime", "dateTime": "={{ $json.checkTimeIso }}" }
     },
     {
@@ -100,7 +176,7 @@
       "name": "Mark No-Show (Default)",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [1540, 0],
+      "position": [1980, -100],
       "parameters": {
         "includeOtherFields": true,
         "assignments": {
@@ -116,7 +192,7 @@
       "name": "Log Booking (No-Show Check)",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [1760, 0],
+      "position": [2200, -100],
       "parameters": {
         "operation": "append",
         "documentId": { "__rl": true, "mode": "id", "value": "REPLACE_WITH_SPREADSHEET_ID" },
@@ -152,11 +228,19 @@
   ],
   "connections": {
     "New Booking Form": { "main": [[{ "index": 0, "node": "Parse Booking", "type": "main" }]] },
-    "Parse Booking": { "main": [[{ "index": 0, "node": "Send Confirmation Email", "type": "main" }]] },
+    "Parse Booking": { "main": [[{ "index": 0, "node": "SMS Config", "type": "main" }]] },
+    "SMS Config": { "main": [[{ "index": 0, "node": "Send Confirmation Email", "type": "main" }]] },
     "Send Confirmation Email": { "main": [[{ "index": 0, "node": "Log Booking (Confirmed)", "type": "main" }]] },
     "Log Booking (Confirmed)": { "main": [[{ "index": 0, "node": "Wait Until Reminder Time", "type": "main" }]] },
-    "Wait Until Reminder Time": { "main": [[{ "index": 0, "node": "Send Reminder Email", "type": "main" }]] },
-    "Send Reminder Email": { "main": [[{ "index": 0, "node": "Wait Until After Appointment", "type": "main" }]] },
+    "Wait Until Reminder Time": { "main": [[
+      { "index": 0, "node": "Send Reminder Email", "type": "main" },
+      { "index": 0, "node": "Send Reminder SMS (24h)", "type": "main" }
+    ]] },
+    "Send Reminder Email": { "main": [[{ "index": 0, "node": "Wait Until 2h Before", "type": "main" }]] },
+    "Wait Until 2h Before": { "main": [[
+      { "index": 0, "node": "Send Second Reminder SMS (2h)", "type": "main" },
+      { "index": 0, "node": "Wait Until After Appointment", "type": "main" }
+    ]] },
     "Wait Until After Appointment": { "main": [[{ "index": 0, "node": "Mark No-Show (Default)", "type": "main" }]] },
     "Mark No-Show (Default)": { "main": [[{ "index": 0, "node": "Log Booking (No-Show Check)", "type": "main" }]] },
     "Mark Attended (Webhook)": { "main": [[{ "index": 0, "node": "Log Booking (Attended)", "type": "main" }]] }
